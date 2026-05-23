@@ -1,0 +1,45 @@
+{
+  "name": "agenticplfinale",
+  "version": "1.0.0",
+  "description": "Agentic stadium command center demo for hackathon",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "check": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rutul72000/AgenticPLFinale.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/rutul72000/AgenticPLFinale/issues"
+  },
+  "homepage": "https://github.com/rutul72000/AgenticPLFinale#readme",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "groq-sdk": "^1.2.0",
+    "helmet": "^8.2.0",
+    "jsonwebtoken": "^9.0.3",
+    "pino": "^8.21.0",
+    "socket.io": "^4.8.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}
