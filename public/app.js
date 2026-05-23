@@ -10,6 +10,7 @@ const zonesEl = {
   media: document.getElementById("zone-media"),
 };
 const gatesEl          = document.getElementById("gates");
+const auxZonesEl       = document.getElementById("auxZones");
 const alertsEl         = document.getElementById("alerts");
 const tracesEl         = document.getElementById("traces");
 const weatherEl        = document.getElementById("weather");
@@ -31,6 +32,12 @@ const agentBadgesEl    = document.getElementById("agentBadges");
 const actionBanner     = document.getElementById("actionBanner");
 const actionBannerText = document.getElementById("actionBannerText");
 const matchPhasesEl    = document.getElementById("matchPhases");
+const reasoningSpotlightEl = document.getElementById("reasoningSpotlight");
+const openReasoningModalBtn = document.getElementById("openReasoningModalBtn");
+const openReasoningModalBtn2 = document.getElementById("openReasoningModalBtn2");
+const reasoningModal = document.getElementById("reasoningModal");
+const closeReasoningModalBtn = document.getElementById("closeReasoningModal");
+const reasoningModalListEl = document.getElementById("reasoningModalList");
 const clearFilterBtn   = document.getElementById("clearFilterBtn");
 const camTotalEl       = document.getElementById("cam-total");
 const camStaffEl       = document.getElementById("cam-staff");
@@ -38,6 +45,7 @@ const camFansCountEl   = document.getElementById("cam-fans-count");
 const camFansBarEl     = document.getElementById("cam-fans-bar");
 const camFansPctEl     = document.getElementById("cam-fans-pct");
 const camConfidenceEl  = document.getElementById("cameraConfidence");
+const cameraFocusBannerEl = document.getElementById("cameraFocusBanner");
 const agentModal      = document.getElementById("agentModal");
 const modalAgentName  = document.getElementById("modalAgentName");
 const modalAgentRole  = document.getElementById("modalAgentRole");
@@ -49,6 +57,31 @@ const chatHistory     = document.getElementById("chatHistory");
 const chatInput       = document.getElementById("chatInput");
 const sendQueryBtn    = document.getElementById("sendQuery");
 const closeModalBtn   = document.getElementById("closeModal");
+const zoneQuickPickEl = document.getElementById("zoneQuickPick");
+const zoneInspectorNameEl = document.getElementById("zoneInspectorName");
+const zoneInspectorOccupancyEl = document.getElementById("zoneInspectorOccupancy");
+const zoneInspectorRiskEl = document.getElementById("zoneInspectorRisk");
+const zoneInspectorEventsCountEl = document.getElementById("zoneInspectorEventsCount");
+const zoneInspectorBarEl = document.getElementById("zoneInspectorBar");
+const zoneRecentEventsEl = document.getElementById("zoneRecentEvents");
+const zoneSurgeBtn = document.getElementById("zoneSurgeBtn");
+const zoneMedicalBtn = document.getElementById("zoneMedicalBtn");
+const zoneFireBtn = document.getElementById("zoneFireBtn");
+const zoneParkingEmergencyBtn = document.getElementById("zoneParkingEmergencyBtn");
+const parkingModeBadgeEl = document.getElementById("parkingModeBadge");
+const parkingOccupiedEl = document.getElementById("parkingOccupied");
+const parkingEmergencyLaneEl = document.getElementById("parkingEmergencyLane");
+const parkingPctEl = document.getElementById("parkingPct");
+const parkingBarEl = document.getElementById("parkingBar");
+const parkingOverflowEl = document.getElementById("parkingOverflow");
+const incidentModal = document.getElementById("incidentModal");
+const closeIncidentModalBtn = document.getElementById("closeIncidentModal");
+const incidentModalTitleEl = document.getElementById("incidentModalTitle");
+const incidentModalZoneEl = document.getElementById("incidentModalZone");
+const incidentModalSeverityEl = document.getElementById("incidentModalSeverity");
+const incidentModalStepsEl = document.getElementById("incidentModalSteps");
+const incidentAcceptBtn = document.getElementById("incidentAcceptBtn");
+const incidentRejectBtn = document.getElementById("incidentRejectBtn");
 
 let token         = "";
 let ticketCount   = 38000;
@@ -56,6 +89,12 @@ let bannerTimeout = null;
 let isAuthenticated = false;
 let selectedAgentFilter = null;
 let latestState = null;
+let selectedZoneId = "north";
+let activeIncidentModalId = null;
+let initialIncidentsSeeded = false;
+const seenIncidentIds = new Set();
+const scheduledIncidentTimers = new Map();
+const INCIDENT_NOTIFICATION_DELAY_MS = 60 * 1000;
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 const api = async (url, options = {}) => {
@@ -101,7 +140,7 @@ const showBanner = (text) => {
 };
 
 const setControlsEnabled = (enabled) => {
-  const ids = ["reviewToggle", "resetBtn", "fillBtn", "happyPathBtn", "approveAllBtn"];
+  const ids = ["reviewToggle", "resetBtn", "fillBtn", "happyPathBtn", "approveAllBtn", "zoneSurgeBtn", "zoneMedicalBtn", "zoneFireBtn", "zoneParkingEmergencyBtn"];
   ids.forEach((id) => {
     const el = document.getElementById(id);
     if (el) el.disabled = !enabled;
@@ -109,6 +148,249 @@ const setControlsEnabled = (enabled) => {
   document.querySelectorAll("button[data-type]").forEach((btn) => {
     btn.disabled = !enabled;
   });
+};
+
+const getRiskMeta = (pct) => {
+  if (pct >= 85) return { label: "Critical", className: "text-red-400", bar: "bg-red-500" };
+  if (pct >= 65) return { label: "Busy", className: "text-yellow-400", bar: "bg-yellow-500" };
+  return { label: "Safe", className: "text-green-400", bar: "bg-green-500" };
+};
+
+const getParkingSnapshot = (state) => {
+  if (state?.parkingManagement) return state.parkingManagement;
+  const parkingZone = state?.zones?.find((z) => z.id === "parking");
+  const gateAZone = state?.zones?.find((z) => z.id === "gate_a");
+  const gateBZone = state?.zones?.find((z) => z.id === "gate_b");
+  const totalSpots = 6000;
+  const occupiedEstimate = Math.max(
+    800,
+    Math.min(
+      totalSpots,
+      (parkingZone?.currentCount || 0) * 6 + Math.floor(((gateAZone?.currentCount || 0) + (gateBZone?.currentCount || 0)) * 0.4)
+    )
+  );
+  return {
+    totalSpots,
+    occupiedSpots: occupiedEstimate,
+    emergencyLaneOpen: true,
+    overflowActive: Math.round((occupiedEstimate / totalSpots) * 100) >= 88,
+    incidentMode: false,
+    updatedAt: new Date().toISOString()
+  };
+};
+
+const setSelectedZone = (zoneId) => {
+  selectedZoneId = zoneId;
+};
+
+const triggerZoneIncident = async (type) => {
+  if (!isAuthenticated) {
+    showBanner("Waiting for secure login token...");
+    return;
+  }
+  const effectiveZoneId = type === "parking_emergency" ? "parking" : selectedZoneId;
+  const selectedZone = latestState?.zones?.find((z) => z.id === effectiveZoneId);
+  const zoneLabel = selectedZone?.name || effectiveZoneId;
+  const label = {
+    crowd_surge: "Crowd Surge",
+    medical: "Medical Emergency",
+    fire: "Fire Alert",
+    parking_emergency: "Parking Emergency"
+  }[type] || type;
+  try {
+    await api("/api/incident", {
+      method: "POST",
+      body: JSON.stringify({
+        type,
+        zoneId: effectiveZoneId,
+        severity: type === "fire" || type === "parking_emergency" ? "high" : "medium",
+        message: `Interactive Console: ${label} in ${zoneLabel}.`
+      })
+    });
+    showBanner(`[ZONE ACTION] ${label} triggered for ${zoneLabel}.`);
+  } catch (err) {
+    showBanner(err.message || "Failed to trigger incident.");
+  }
+};
+
+const renderZoneQuickPick = (zones) => {
+  if (!zoneQuickPickEl) return;
+  zoneQuickPickEl.innerHTML = zones.map((z) => {
+    const selected = z.id === selectedZoneId;
+    const pct = Math.round((z.currentCount / z.capacity) * 100);
+    return `
+      <button
+        class="zone-chip text-left rounded-lg border px-2 py-1.5 transition-all ${
+          selected
+            ? "bg-blue-500/20 border-blue-400 text-blue-200 ring-1 ring-blue-300"
+            : "bg-slate-900/60 border-slate-700 text-slate-300 hover:bg-slate-800"
+        }"
+        data-zone-id="${z.id}"
+      >
+        <div class="text-[10px] font-bold">${z.name}</div>
+        <div class="text-[9px] mono opacity-70">${pct}%</div>
+      </button>
+    `;
+  }).join("");
+};
+
+const buildIncidentAutomationSteps = (incident) => {
+  const map = {
+    medical: [
+      "Security notified to clear and sanitize surrounding area.",
+      "Medical unit dispatched with fastest route access.",
+      "Public guidance issued to keep emergency lane open."
+    ],
+    fire: [
+      "Emergency message sent to fire-response security teams.",
+      "Evacuation instruction issued for nearby spectators.",
+      "Camera AI focus shifted to impacted gate/concourse zone."
+    ],
+    crowd_surge: [
+      "Steward teams rerouting flow from congested zone.",
+      "Overflow gates prepared to reduce pressure points.",
+      "Live density tracking raised to high-frequency mode."
+    ],
+    weather: [
+      "Weather advisory broadcast to all screens.",
+      "Ground and shelter teams activated for safety protocol.",
+      "Camera AI focus shifted to exposed concourse areas."
+    ],
+    parking_emergency: [
+      "Emergency parking lane opened for priority vehicle movement.",
+      "Security redirected incoming vehicles to overflow lot.",
+      "Camera AI focus shifted to parking ingress and emergency corridor."
+    ]
+  };
+  return map[incident.type] || ["Automated response initiated by command center AI."];
+};
+
+const openIncidentModal = (incident, state) => {
+  if (!incidentModal || !incidentModalTitleEl || !incidentModalZoneEl || !incidentModalSeverityEl || !incidentModalStepsEl) return;
+  const zone = state.zones.find((z) => z.id === incident.zoneId);
+  incidentModalTitleEl.textContent = `${incident.type.replace("_", " ").toUpperCase()} Automation`;
+  incidentModalZoneEl.textContent = zone ? zone.name : incident.zoneId;
+  incidentModalSeverityEl.textContent = incident.severity.toUpperCase();
+  activeIncidentModalId = incident.id;
+  const steps = buildIncidentAutomationSteps(incident);
+  incidentModalStepsEl.innerHTML = steps
+    .map((step) => `<div class="rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2 text-slate-300">• ${step}</div>`)
+    .join("");
+  incidentModal.classList.remove("hidden");
+};
+
+const scheduleIncidentNotification = (incident) => {
+  if (!incident || incident.status !== "open") return;
+  if (seenIncidentIds.has(incident.id) || scheduledIncidentTimers.has(incident.id)) return;
+
+  seenIncidentIds.add(incident.id);
+  const createdAtMs = new Date(incident.createdAt).getTime();
+  const elapsedMs = Date.now() - createdAtMs;
+  const delayMs = Math.max(INCIDENT_NOTIFICATION_DELAY_MS - elapsedMs, 0);
+
+  const timerId = setTimeout(() => {
+    scheduledIncidentTimers.delete(incident.id);
+    const latestIncident = latestState?.incidents?.find((item) => item.id === incident.id);
+    if (!latestIncident || latestIncident.status !== "open" || !latestState) return;
+    setSelectedZone(latestIncident.zoneId);
+    openIncidentModal(latestIncident, latestState);
+  }, delayMs);
+
+  scheduledIncidentTimers.set(incident.id, timerId);
+};
+
+const reviewActiveIncident = async (decision) => {
+  if (!activeIncidentModalId) return;
+  try {
+    await api(`/api/incidents/${activeIncidentModalId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ decision })
+    });
+    showBanner(
+      decision === "accept"
+        ? "[CONTROL ROOM] Incident authorized as handled."
+        : "[CONTROL ROOM] Incident rejected and escalated."
+    );
+    if (incidentModal) incidentModal.classList.add("hidden");
+    activeIncidentModalId = null;
+  } catch (err) {
+    showBanner(err.message || "Failed to review incident.");
+  }
+};
+
+const getPriorityRankMap = (incidentType) => {
+  const order = getIncidentPriorityAgents(incidentType);
+  return order.reduce((acc, name, idx) => {
+    acc[name] = idx;
+    return acc;
+  }, {});
+};
+
+const getPrioritizedTraces = (state, traces) => {
+  const openIncident = state.incidents.find((incident) => incident.status === "open");
+  if (!openIncident) return traces;
+  const rankMap = getPriorityRankMap(openIncident.type);
+  return [...traces].sort((a, b) => {
+    const rankA = rankMap[a.agent] ?? 99;
+    const rankB = rankMap[b.agent] ?? 99;
+    if (rankA !== rankB) return rankA - rankB;
+    return 0;
+  });
+};
+
+const renderReasoningModal = (state) => {
+  if (!reasoningModalListEl) return;
+  const spotlight = getSpotlightTrace(state);
+  const baseTraces = selectedAgentFilter
+    ? state.agentTraces.filter((t) => t.agent === selectedAgentFilter)
+    : state.agentTraces;
+  const modalTraces = getPrioritizedTraces(state, baseTraces).slice(0, 60);
+  const focusHeader = spotlight
+    ? `<div class="mb-3 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-300">
+         Current focus: <span class="font-bold">[${spotlight.agent}]</span> ${spotlight.thought}
+       </div>`
+    : "";
+
+  reasoningModalListEl.innerHTML = `${focusHeader}${modalTraces.map((t) => `
+    <div class="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1">
+      <div class="flex justify-between items-center">
+        <span class="text-blue-400 font-bold uppercase tracking-tighter text-[10px]">[${t.agent}]</span>
+        <span class="text-slate-600 text-[9px]">${t.at}</span>
+      </div>
+      <div class="text-slate-400 italic text-[12px]">" ${t.thought} "</div>
+      <div class="text-blue-300 font-bold text-[12px]">➔ ${t.action}</div>
+    </div>
+  `).join("")}`;
+};
+
+const getIncidentPriorityAgents = (incidentType) => {
+  if (incidentType === "weather") {
+    return ["Meteorologist", "Incident Commander", "Comms Officer", "Supervisor", "Sentinel"];
+  }
+  if (incidentType === "fire" || incidentType === "crowd_surge" || incidentType === "parking_emergency") {
+    return ["Incident Commander", "Comms Officer", "Supervisor", "Sentinel", "Meteorologist"];
+  }
+  if (incidentType === "medical") {
+    return ["Incident Commander", "Comms Officer", "Supervisor", "Sentinel", "Meteorologist"];
+  }
+  return ["Sentinel", "Meteorologist", "Incident Commander", "Comms Officer", "Supervisor"];
+};
+
+const getSpotlightTrace = (state) => {
+  if (selectedAgentFilter) {
+    return state.agentTraces.find((t) => t.agent === selectedAgentFilter) || null;
+  }
+
+  const openIncident = state.incidents.find((incident) => incident.status === "open");
+  if (openIncident) {
+    const priority = getIncidentPriorityAgents(openIncident.type);
+    for (const agentName of priority) {
+      const trace = state.agentTraces.find((t) => t.agent === agentName);
+      if (trace) return trace;
+    }
+  }
+
+  return state.agentTraces[0] || null;
 };
 
 // ─── Match Phase Ticker ───────────────────────────────────────────────────────
@@ -154,7 +436,7 @@ const AGENTS = [
   },
   { 
     name: "Comms Officer",      
-    desc: "PA & Broadcast",  
+    desc: "Public Announcements",  
     color: "green",
     icon: "CO",
     bio: "Manages public information channels. Generates calm, clear safety announcements for stadium screens and coordinates with external emergency services."
@@ -388,11 +670,91 @@ if (suggestedQuestionsEl) {
     handleAgentQuery();
   });
 }
+if (zoneQuickPickEl) {
+  zoneQuickPickEl.addEventListener("click", (e) => {
+    const btn = e.target.closest(".zone-chip");
+    if (!btn) return;
+    const zoneId = btn.dataset.zoneId;
+    if (!zoneId) return;
+    setSelectedZone(zoneId);
+  });
+}
+if (auxZonesEl) {
+  auxZonesEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-zone-card]");
+    if (!btn) return;
+    const zoneId = btn.dataset.zoneCard;
+    if (!zoneId) return;
+    setSelectedZone(zoneId);
+  });
+}
+if (zoneSurgeBtn) {
+  zoneSurgeBtn.addEventListener("click", () => triggerZoneIncident("crowd_surge"));
+}
+if (zoneMedicalBtn) {
+  zoneMedicalBtn.addEventListener("click", () => triggerZoneIncident("medical"));
+}
+if (zoneFireBtn) {
+  zoneFireBtn.addEventListener("click", () => triggerZoneIncident("fire"));
+}
+if (zoneParkingEmergencyBtn) {
+  zoneParkingEmergencyBtn.addEventListener("click", () => {
+    setSelectedZone("parking");
+    triggerZoneIncident("parking_emergency");
+  });
+}
 if (closeModalBtn && agentModal) {
   closeModalBtn.addEventListener("click", () => {
     agentModal.classList.add("hidden");
     currentModalAgent = null;
   });
+}
+if (closeIncidentModalBtn && incidentModal) {
+  closeIncidentModalBtn.addEventListener("click", () => {
+    incidentModal.classList.add("hidden");
+    activeIncidentModalId = null;
+    showBanner("Incident review dismissed. Control room can review it later from alerts.");
+  });
+}
+if (incidentModal) {
+  incidentModal.addEventListener("click", (e) => {
+    if (e.target === incidentModal) {
+      incidentModal.classList.add("hidden");
+      activeIncidentModalId = null;
+    }
+  });
+}
+if (openReasoningModalBtn) {
+  openReasoningModalBtn.addEventListener("click", () => {
+    if (!reasoningModal || !latestState) return;
+    renderReasoningModal(latestState);
+    reasoningModal.classList.remove("hidden");
+  });
+}
+if (openReasoningModalBtn2) {
+  openReasoningModalBtn2.addEventListener("click", () => {
+    if (!reasoningModal || !latestState) return;
+    renderReasoningModal(latestState);
+    reasoningModal.classList.remove("hidden");
+  });
+}
+if (closeReasoningModalBtn && reasoningModal) {
+  closeReasoningModalBtn.addEventListener("click", () => {
+    reasoningModal.classList.add("hidden");
+  });
+}
+if (reasoningModal) {
+  reasoningModal.addEventListener("click", (e) => {
+    if (e.target === reasoningModal) {
+      reasoningModal.classList.add("hidden");
+    }
+  });
+}
+if (incidentAcceptBtn) {
+  incidentAcceptBtn.addEventListener("click", () => reviewActiveIncident("accept"));
+}
+if (incidentRejectBtn) {
+  incidentRejectBtn.addEventListener("click", () => reviewActiveIncident("reject"));
 }
 
 // Close on background click
@@ -416,6 +778,80 @@ const render = (state) => {
     <span class="text-blue-400">W:</span>${Math.round(state.weather.windKmph)}km/h`;
 
   reviewToggle.checked = state.humanReviewEnabled;
+
+  // One-page zone picker (all zones visible)
+  renderZoneQuickPick(state.zones);
+  const selectedZone = state.zones.find((z) => z.id === selectedZoneId) || state.zones[0];
+  if (selectedZone) {
+    selectedZoneId = selectedZone.id;
+    const selectedPct = Math.round((selectedZone.currentCount / selectedZone.capacity) * 100);
+    const risk = getRiskMeta(selectedPct);
+    if (zoneInspectorNameEl) zoneInspectorNameEl.textContent = selectedZone.name;
+    if (zoneInspectorOccupancyEl) {
+      zoneInspectorOccupancyEl.textContent = `${selectedZone.currentCount.toLocaleString()} / ${selectedZone.capacity.toLocaleString()} (${selectedPct}%)`;
+    }
+    if (zoneInspectorRiskEl) {
+      zoneInspectorRiskEl.textContent = risk.label;
+      zoneInspectorRiskEl.className = `font-bold mt-1 ${risk.className}`;
+    }
+    if (zoneInspectorBarEl) {
+      zoneInspectorBarEl.style.width = `${selectedPct}%`;
+      zoneInspectorBarEl.className = `h-full transition-all duration-500 ${risk.bar}`;
+    }
+    const relatedEvents = [
+      ...state.incidents
+        .filter((i) => i.zoneId === selectedZone.id)
+        .slice(0, 4)
+        .map((i) => `${new Date(i.createdAt).toLocaleTimeString()} [INCIDENT] ${i.type} (${i.severity})`),
+      ...state.agentTraces
+        .filter((t) => t.thought.includes(selectedZone.name) || t.action.includes(selectedZone.name))
+        .slice(0, 4)
+        .map((t) => `${t.at} [${t.agent}] ${t.action}`)
+    ].slice(0, 6);
+    if (zoneInspectorEventsCountEl) {
+      zoneInspectorEventsCountEl.textContent = `${relatedEvents.length}`;
+    }
+    if (zoneRecentEventsEl) {
+      zoneRecentEventsEl.innerHTML = relatedEvents.length
+        ? relatedEvents.map((e) => `<div class="text-slate-400 border-l-2 border-slate-700 pl-2 py-1">${e}</div>`).join("")
+        : `<div class="text-slate-500 italic">No recent events for this zone.</div>`;
+    }
+  }
+
+  // Camera AI focus context (incident-aware)
+  if (cameraFocusBannerEl) {
+    const focus = state.cameraFocus;
+    if (focus && focus.zoneId) {
+      cameraFocusBannerEl.textContent = `Focus: ${focus.message}`;
+      cameraFocusBannerEl.className = `mb-3 rounded-lg border px-3 py-2 text-[10px] mono ${
+        focus.priority === "high"
+          ? "border-red-500/40 bg-red-500/10 text-red-300"
+          : "border-blue-500/30 bg-blue-500/10 text-blue-300"
+      }`;
+    } else {
+      cameraFocusBannerEl.textContent = "Focus: General monitoring across stadium zones.";
+      cameraFocusBannerEl.className = "mb-3 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[10px] mono text-blue-300";
+    }
+  }
+
+  // Delayed incident authorization notifications (shows after 1 minute, never on initial load)
+  if (!initialIncidentsSeeded) {
+    state.incidents.forEach((incident) => seenIncidentIds.add(incident.id));
+    initialIncidentsSeeded = true;
+  } else {
+    state.incidents.forEach((incident) => {
+      scheduleIncidentNotification(incident);
+    });
+  }
+
+  // Clear timers for incidents that are no longer open
+  for (const [incidentId, timerId] of scheduledIncidentTimers.entries()) {
+    const incident = state.incidents.find((item) => item.id === incidentId);
+    if (!incident || incident.status !== "open") {
+      clearTimeout(timerId);
+      scheduledIncidentTimers.delete(incidentId);
+    }
+  }
 
   // KPI: fans total
   const totalFans  = state.zones.reduce((s, z) => s + z.currentCount, 0);
@@ -476,42 +912,113 @@ const render = (state) => {
   kpiTickets.textContent = ticketCount.toLocaleString();
 
   // Zones
+  const primaryZones = new Set(["north", "south", "east", "west"]);
   state.zones.forEach(zone => {
     const key = zone.id.replace("gate_", "").toLowerCase();
     const el  = zonesEl[key];
-    if (!el) return;
-    const pct    = Math.round((zone.currentCount / zone.capacity) * 100);
+    const pct = Math.round((zone.currentCount / zone.capacity) * 100);
     const colors = getStatusColors(pct);
-    const isSmall = key === "vip" || key === "media";
+    const fillClass = pct >= 85 ? "fill-critical" : pct >= 65 ? "fill-busy" : "fill-safe";
+    const isSelectedZone = zone.id === selectedZoneId;
 
-    if (!isSmall) {
+    if (el && primaryZones.has(key)) {
       const areaClass = { north: "zone-north", south: "zone-south", east: "zone-east", west: "zone-west" }[key] || "";
-      el.className = `${areaClass} glass rounded-xl p-4 flex flex-col justify-center items-center transition-all duration-500 ${colors.bg} ${colors.border} ${colors.pulse}`;
+      el.className = `${areaClass} glass rounded-xl p-2 flex flex-col justify-center items-center transition-all duration-500 cursor-pointer ${colors.border} ${colors.pulse} ${isSelectedZone ? "ring-2 ring-blue-400 shadow-lg shadow-blue-900/30" : ""}`;
       el.innerHTML = `
-        <span class="text-[10px] uppercase tracking-widest font-bold text-slate-400 mb-1">${zone.name}</span>
-        <span class="text-2xl font-bold ${colors.text}">${pct}%</span>
-        <span class="text-[10px] mono text-slate-500">${zone.currentCount.toLocaleString()} / ${zone.capacity.toLocaleString()}</span>
+        <div class="zone-3d-card">
+          <div class="zone-3d-fill ${fillClass}" style="height:${pct}%"></div>
+          <div class="zone-3d-grid"></div>
+          <div class="zone-3d-content h-full flex flex-col justify-center items-center px-3 py-4">
+            <span class="text-[10px] uppercase tracking-widest font-bold text-slate-200 mb-1">${zone.name}</span>
+            <span class="text-2xl font-bold ${colors.text}">${pct}%</span>
+            <span class="text-[10px] mono text-slate-200/85">${zone.currentCount.toLocaleString()} / ${zone.capacity.toLocaleString()}</span>
+          </div>
+        </div>
       `;
-    } else {
-      el.className = `absolute ${key === "vip" ? "top-4" : "bottom-4"} glass px-2 py-1 rounded text-[8px] border transition-all duration-500 ${colors.text} ${colors.border} ${colors.bg}`;
+      el.onclick = () => setSelectedZone(zone.id);
+    } else if (el && (key === "vip" || key === "media")) {
+      el.className = `absolute ${key === "vip" ? "top-4" : "bottom-4"} glass px-2 py-1 rounded text-[8px] border transition-all duration-500 cursor-pointer ${colors.text} ${colors.border} ${colors.bg} ${isSelectedZone ? "ring-2 ring-blue-400" : ""}`;
       el.innerHTML = `${key.toUpperCase()}: ${pct}%`;
+      el.onclick = () => setSelectedZone(zone.id);
     }
   });
+
+  // Auxiliary zones (gates, parking, VIP, media, food)
+  if (auxZonesEl) {
+    const auxZoneCards = state.zones
+      .filter((zone) => !primaryZones.has(zone.id.replace("gate_", "").toLowerCase()))
+      .map((zone) => {
+        const pct = Math.round((zone.currentCount / zone.capacity) * 100);
+        const colors = getStatusColors(pct);
+        const selected = zone.id === selectedZoneId;
+        const barTone = pct >= 85 ? "bg-red-500" : pct >= 65 ? "bg-orange-400" : "bg-emerald-400";
+        return `
+          <button
+            data-zone-card="${zone.id}"
+            class="glass rounded-xl p-3 text-left transition-all duration-500 border ${colors.border} ${selected ? "ring-2 ring-blue-400 shadow-lg shadow-blue-900/30" : ""}">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] uppercase tracking-widest font-bold text-slate-300">${zone.name}</span>
+                <span class="text-sm font-bold ${colors.text} mono">${pct}%</span>
+              </div>
+              <div class="w-full h-2 bg-slate-900/70 rounded-full overflow-hidden">
+                <div class="h-full ${barTone} transition-all duration-700" style="width:${pct}%"></div>
+              </div>
+              <div class="text-[10px] mono text-slate-400">
+                ${zone.currentCount.toLocaleString()} / ${zone.capacity.toLocaleString()}
+              </div>
+            </div>
+          </button>
+        `;
+      })
+      .join("");
+    auxZonesEl.innerHTML = auxZoneCards;
+  }
+
+  const parkingState = getParkingSnapshot(state);
+  if (parkingState) {
+    const parkingPct = Math.round((parkingState.occupiedSpots / parkingState.totalSpots) * 100);
+    if (parkingOccupiedEl) parkingOccupiedEl.textContent = `${parkingState.occupiedSpots.toLocaleString()} / ${parkingState.totalSpots.toLocaleString()}`;
+    if (parkingEmergencyLaneEl) parkingEmergencyLaneEl.textContent = parkingState.emergencyLaneOpen ? "Open" : "Closed";
+    if (parkingPctEl) parkingPctEl.textContent = `${parkingPct}%`;
+    if (parkingBarEl) {
+      parkingBarEl.style.width = `${parkingPct}%`;
+      parkingBarEl.className = `h-full transition-all duration-1000 ${parkingPct >= 88 ? "bg-red-500" : parkingPct >= 70 ? "bg-orange-400" : "bg-purple-500"}`;
+    }
+    if (parkingOverflowEl) {
+      parkingOverflowEl.textContent = parkingState.overflowActive
+        ? "Overflow lot active"
+        : "Overflow lot on standby";
+      parkingOverflowEl.className = `text-[10px] mono text-right ${parkingState.overflowActive ? "text-orange-400" : "text-slate-500"}`;
+    }
+    if (parkingModeBadgeEl) {
+      parkingModeBadgeEl.textContent = parkingState.incidentMode ? "Emergency" : "Normal";
+      parkingModeBadgeEl.className = `text-[9px] px-2 py-0.5 rounded uppercase mono tracking-widest ${
+        parkingState.incidentMode ? "bg-red-500/20 text-red-300" : "bg-green-500/20 text-green-400"
+      }`;
+    }
+  }
 
   // Gates
   gatesEl.innerHTML = state.gates.map(gate => {
     const rerouted = gate.status === "rerouted";
     const closed   = gate.status === "closed";
+    const focusedGate = state.cameraFocus?.gateId === gate.id;
     const dotColor = closed ? "bg-red-500" : rerouted ? "bg-orange-500 animate-pulse" : "bg-green-500";
     const boxColor = closed ? "border-red-500/40 bg-red-500/10" : rerouted ? "border-orange-500/40 bg-orange-500/10" : "border-slate-700 bg-slate-800/50";
+    const flowPct = Math.min(100, Math.round((gate.flowPerMin / 260) * 100));
+    const flowTone = flowPct >= 85 ? "bg-red-500" : flowPct >= 65 ? "bg-orange-400" : "bg-emerald-400";
     return `
-      <div class="p-3 rounded-lg border ${boxColor}">
+      <div class="p-3 rounded-lg border ${boxColor} ${focusedGate ? "ring-2 ring-red-400 shadow-lg shadow-red-900/30" : ""}">
         <div class="flex justify-between items-center mb-1">
           <span class="text-xs font-bold text-slate-400">GATE ${gate.id}</span>
-          <span class="w-2 h-2 rounded-full ${dotColor}"></span>
+          <span class="w-2 h-2 rounded-full ${focusedGate ? "bg-red-400 animate-ping" : dotColor}"></span>
         </div>
         <div class="text-lg font-bold mono">${gate.flowPerMin}</div>
-        <div class="text-[10px] text-slate-500 uppercase tracking-tighter">${gate.status}</div>
+        <div class="text-[10px] text-slate-500 uppercase tracking-tighter">${focusedGate ? `${gate.status} • focus` : gate.status}</div>
+        <div class="mt-2 w-full h-1.5 bg-slate-900/70 rounded-full overflow-hidden">
+          <div class="h-full ${flowTone} transition-all duration-700" style="width:${flowPct}%"></div>
+        </div>
       </div>
     `;
   }).join("");
@@ -524,13 +1031,30 @@ const render = (state) => {
 
   // Agent trace + badges
   const latestTrace = state.agentTraces[0] || null;
-  renderAgentBadges(latestTrace);
+  const spotlightTrace = getSpotlightTrace(state);
+  renderAgentBadges(spotlightTrace || latestTrace);
+
+  // Spotlight: always visible latest reasoning (no right-side scrolling needed)
+  if (reasoningSpotlightEl) {
+    if (spotlightTrace) {
+      reasoningSpotlightEl.innerHTML = `
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-blue-400 text-[10px] font-bold uppercase">[${spotlightTrace.agent}]</span>
+          <span class="text-slate-500 text-[10px]">${spotlightTrace.at}</span>
+        </div>
+        <div class="text-slate-300 text-[12px]">${spotlightTrace.thought}</div>
+        <div class="text-blue-300 text-[12px] font-semibold mt-1">➔ ${spotlightTrace.action}</div>
+      `;
+    } else {
+      reasoningSpotlightEl.textContent = "Waiting for agent reasoning...";
+    }
+  }
 
   const filteredTraces = selectedAgentFilter 
     ? state.agentTraces.filter(t => t.agent === selectedAgentFilter)
     : state.agentTraces;
 
-  tracesEl.innerHTML = filteredTraces.slice(0, 20).map(t => `
+  tracesEl.innerHTML = filteredTraces.slice(0, 8).map(t => `
     <div class="p-3 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1">
       <div class="flex justify-between items-center">
         <span class="text-blue-400 font-bold uppercase tracking-tighter text-[10px]">[${t.agent}]</span>
@@ -663,21 +1187,27 @@ happyPathBtn.addEventListener("click", async () => {
   const steps = [
     { type: "weather",    msg: "Rain front approaching stadium." },
     { type: "crowd_surge", msg: "Gate B density surge detected." },
-    { type: "medical",    msg: "Fan collapsed near concourse." }
+    { type: "medical",    msg: "Fan collapsed near concourse." },
+    { type: "parking_emergency", msg: "Parking entry blocked near emergency lane." }
   ];
   for (const step of steps) {
     showBanner(`[DEMO] Triggering ${step.type.replace("_", " ")}...`);
     try {
       await api("/api/incident", {
         method: "POST",
-        body:   JSON.stringify({ type: step.type, zoneId: step.type === "weather" ? "gate_a" : "gate_b", severity: "medium", message: step.msg })
+        body: JSON.stringify({
+          type: step.type,
+          zoneId: step.type === "weather" ? "gate_a" : step.type === "parking_emergency" ? "parking" : "gate_b",
+          severity: step.type === "parking_emergency" ? "high" : "medium",
+          message: step.msg
+        })
       });
     } catch (e) { console.error(e); }
     await new Promise(r => setTimeout(r, 4000));
   }
-  showBanner("[DEMO] Happy Path complete — all agents responded.");
+  showBanner("[DEMO] Run Full Demo complete — all agents responded.");
   happyPathBtn.disabled    = false;
-  happyPathBtn.textContent = "🚀 Happy Path";
+  happyPathBtn.textContent = "🚀 Run Full Demo";
 });
 
 socket.on("state:update", render);

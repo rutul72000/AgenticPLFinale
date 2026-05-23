@@ -12,7 +12,7 @@ import { z } from "zod";
 import pino from "pino";
 import Groq from "groq-sdk";
 
-type IncidentType = "crowd_surge" | "medical" | "fire" | "weather";
+type IncidentType = "crowd_surge" | "medical" | "fire" | "weather" | "parking_emergency";
 
 type Zone = {
   id: string;
@@ -40,6 +40,8 @@ type Incident = {
   severity: "low" | "medium" | "high";
   message: string;
   createdAt: string;
+  status: "open" | "accepted" | "rejected";
+  reviewedAt?: string;
 };
 
 type PendingAction = {
@@ -65,6 +67,24 @@ type CameraStats = {
   confidence: number;
 };
 
+type ParkingManagement = {
+  totalSpots: number;
+  occupiedSpots: number;
+  emergencyLaneOpen: boolean;
+  overflowActive: boolean;
+  incidentMode: boolean;
+  updatedAt: string;
+};
+
+type CameraFocus = {
+  zoneId: string;
+  gateId: string;
+  incidentType: IncidentType | "none";
+  message: string;
+  priority: "normal" | "high";
+  updatedAt: string;
+};
+
 type AppState = {
   generatedAt: string;
   humanReviewEnabled: boolean;
@@ -72,6 +92,8 @@ type AppState = {
   gates: Gate[];
   weather: WeatherState;
   cameraStats: CameraStats;
+  parkingManagement: ParkingManagement;
+  cameraFocus: CameraFocus;
   incidents: Incident[];
   alerts: string[];
   agentTraces: AgentTrace[];
@@ -132,6 +154,22 @@ const state: AppState = {
     staffCount: 0,
     confidence: 94
   },
+  parkingManagement: {
+    totalSpots: 6000,
+    occupiedSpots: 2200,
+    emergencyLaneOpen: true,
+    overflowActive: false,
+    incidentMode: false,
+    updatedAt: new Date().toISOString()
+  },
+  cameraFocus: {
+    zoneId: "",
+    gateId: "",
+    incidentType: "none",
+    message: "General monitoring across stadium zones.",
+    priority: "normal",
+    updatedAt: new Date().toISOString()
+  },
   incidents: [],
   alerts: ["System online. Monitoring crowd movement across all zones."],
   agentTraces: [],
@@ -144,7 +182,7 @@ const authSchema = z.object({
 });
 
 const incidentSchema = z.object({
-  type: z.enum(["crowd_surge", "medical", "fire", "weather"]),
+  type: z.enum(["crowd_surge", "medical", "fire", "weather", "parking_emergency"]),
   zoneId: z.string().min(1),
   severity: z.enum(["low", "medium", "high"]).default("medium"),
   message: z.string().min(3).max(200)
@@ -154,8 +192,14 @@ const reviewSchema = z.object({
   enabled: z.boolean()
 });
 
+const incidentReviewSchema = z.object({
+  decision: z.enum(["accept", "reject"])
+});
+
 // Track which incident IDs have already had a Comms Officer announcement
 const announcedIncidents = new Set<string>();
+// Track which incident IDs already have an Incident Commander response plan
+const plannedIncidentResponses = new Set<string>();
 
 const emitState = () => {
   state.generatedAt = new Date().toISOString();
@@ -195,6 +239,17 @@ const enqueueOrExecuteAction = (source: string, action: string, risk: "low" | "h
 };
 
 const safePercent = (zone: Zone) => Math.round((zone.currentCount / zone.capacity) * 100);
+
+const getZoneName = (zoneId: string) => state.zones.find((z) => z.id === zoneId)?.name || zoneId;
+
+const mapZoneToGate = (zoneId: string) => {
+  if (zoneId === "gate_a") return "A";
+  if (zoneId === "gate_b") return "B";
+  if (zoneId === "north" || zoneId === "vip") return "A";
+  if (zoneId === "east" || zoneId === "media") return "B";
+  if (zoneId === "south" || zoneId === "parking") return "C";
+  return "D";
+};
 
 let lastAICallAt = 0;
 const aiCallTimestamps: number[] = [];
@@ -255,12 +310,16 @@ const buildFallbackAnnouncement = (incident: Incident): string => {
       `For your safety, please move away from ${zoneName} concourse. Stewards are directing alternate routes.`,
     ],
     medical: [
-      `A medical team has been dispatched to ${zoneName}. Please keep aisles clear to allow access.`,
-      `Medical assistance is being provided near ${zoneName}. Please stay seated and keep pathways clear.`,
+      `Medical team has been dispatched to ${zoneName}. Security is clearing and sanitizing nearby area; please keep aisles open.`,
+      `Medical assistance in progress near ${zoneName}. Security requests all spectators keep emergency pathways clear.`,
     ],
     weather: [
       `Weather advisory: rain expected shortly. Covered areas near Gates B and C are now open for shelter.`,
       `Lightning protocol activated. All spectators in open areas of ${zoneName} please move under cover.`,
+    ],
+    parking_emergency: [
+      `Parking control update: emergency lane activated near ${zoneName}. Please follow staff routing instructions.`,
+      `Parking advisory: overflow lot has opened due to emergency vehicle movement near ${zoneName}. Follow ground staff guidance.`,
     ]
   };
   const options = announcements[incident.type] || [`Attention near ${zoneName}: please follow staff instructions.`];
@@ -271,8 +330,8 @@ const runAgents = async () => {
   // 1. Sentinel: Crowd Density Monitoring
   const hotZones = state.zones.filter((zone) => safePercent(zone) >= 85);
   for (const zone of hotZones) {
-    const thought = `Critical density detected in ${zone.name} (${safePercent(zone)}%). Potential bottleneck risk.`;
-    const action = `Initiating dynamic rerouting. Throttling inflow at Gate ${state.gates[0].id}.`;
+    const thought = `${zone.name} is now at ${safePercent(zone)}% capacity. We're close to a bottleneck if inflow continues.`;
+    const action = `I'm rerouting part of the incoming crowd and slowing entry at Gate ${state.gates[0].id} to reduce pressure.`;
     addTrace("Sentinel", thought, action);
     enqueueOrExecuteAction("Sentinel", `Reroute traffic from ${zone.name} to adjacent zones.`, "low");
     
@@ -283,30 +342,110 @@ const runAgents = async () => {
 
   // 2. Meteorologist: Weather Risk Assessment
   if (state.weather.rainProbability > 75) {
-    const thought = `Rain probability reached ${state.weather.rainProbability}%. High risk of sudden stand evacuation.`;
-    const action = `Activating Rain Protocol. Opening secondary concourse shelters.`;
+    const thought = `Rain risk is up to ${Math.round(state.weather.rainProbability)}%. We should prepare for rapid movement from exposed stands.`;
+    const action = "Starting rain protocol now and opening secondary concourse shelters.";
     addTrace("Meteorologist", thought, action);
     enqueueOrExecuteAction("Meteorologist", "Deploy pitch covers and alert ground staff.", "low");
   } else if (state.weather.temperature > 38) {
-    addTrace("Meteorologist", `Heat index critical (${state.weather.temperature}°C).`, "Increasing hydration station alerts.");
+    addTrace(
+      "Meteorologist",
+      `It's very hot right now (${Math.round(state.weather.temperature)}°C). Crowd comfort risk is increasing.`,
+      "I've increased hydration and heat-safety alerts across all stands."
+    );
+  }
+
+  // Keep parking system state realistic outside emergencies
+  const hasOpenParkingEmergency = state.incidents.some(
+    (incident) => incident.status === "open" && incident.type === "parking_emergency"
+  );
+  if (!hasOpenParkingEmergency) {
+    state.parkingManagement.incidentMode = false;
+    state.parkingManagement.emergencyLaneOpen = true;
   }
 
   // 3. Incident Commander: Emergency Response
-  const recentIncident = state.incidents[0];
-  if (recentIncident && Date.now() - new Date(recentIncident.createdAt).getTime() < 45_000) {
-    const thought = `Responding to ${recentIncident.type.replace('_', ' ')} at ${recentIncident.zoneId}. Severity: ${recentIncident.severity}.`;
+  const recentIncident = state.incidents.find((incident) => incident.status === "open");
+  if (
+    recentIncident &&
+    Date.now() - new Date(recentIncident.createdAt).getTime() < 45_000 &&
+    !plannedIncidentResponses.has(recentIncident.id)
+  ) {
+    plannedIncidentResponses.add(recentIncident.id);
+    if (plannedIncidentResponses.size > 100) {
+      const first = plannedIncidentResponses.values().next().value;
+      if (first) plannedIncidentResponses.delete(first);
+    }
+
+    const zoneName = getZoneName(recentIncident.zoneId);
+    const targetGate = mapZoneToGate(recentIncident.zoneId);
+    const thought = `We have a ${recentIncident.type.replace("_", " ")} incident near ${zoneName} (severity: ${recentIncident.severity}). I'm coordinating response now.`;
     let action = "";
     let risk: "low" | "high" = "low";
 
     if (recentIncident.type === "fire") {
-      action = `Evacuate ${recentIncident.zoneId} immediately. Seal gas lines. Dispatch fire response team.`;
+      action = `We've told security to start evacuation around ${zoneName}, and fire response teams are moving in through Gate ${targetGate}.`;
       risk = "high";
+      addAlert(`[AUTOMATION] Fire emergency: security instructed to evacuate ${zoneName} immediately.`);
+      state.cameraFocus = {
+        zoneId: recentIncident.zoneId,
+        gateId: targetGate,
+        incidentType: "fire",
+        message: `High-priority camera focus on Gate ${targetGate} and ${zoneName} evacuation lanes.`,
+        priority: "high",
+        updatedAt: new Date().toISOString()
+      };
     } else if (recentIncident.type === "crowd_surge") {
-      action = `Deploy rapid response stewards to ${recentIncident.zoneId}. Open emergency exit Gate C.`;
+      action = `Security stewards are now redirecting crowd flow away from ${zoneName} through Gate ${targetGate} and nearby overflow routes.`;
       risk = "high";
-    } else {
-      action = `Dispatch medical unit to ${recentIncident.zoneId}. Clear path for ambulance.`;
+      addAlert(`[AUTOMATION] Crowd surge: flow-control stewards sent to ${zoneName}.`);
+      state.cameraFocus = {
+        zoneId: recentIncident.zoneId,
+        gateId: targetGate,
+        incidentType: "crowd_surge",
+        message: `AI tracking crowd pressure near ${zoneName}; focus shifted to Gate ${targetGate}.`,
+        priority: "high",
+        updatedAt: new Date().toISOString()
+      };
+    } else if (recentIncident.type === "medical") {
+      action = `Medical response is active in ${zoneName}; security is clearing and sanitizing the area while paramedics enter through Gate ${targetGate}.`;
       risk = "low";
+      addAlert(`[AUTOMATION] Medical: security notified to clear and sanitize area around ${zoneName}.`);
+      state.cameraFocus = {
+        zoneId: recentIncident.zoneId,
+        gateId: targetGate,
+        incidentType: "medical",
+        message: `Camera focus on medical response corridor near ${zoneName} (Gate ${targetGate}).`,
+        priority: "normal",
+        updatedAt: new Date().toISOString()
+      };
+    } else if (recentIncident.type === "parking_emergency") {
+      action = `Parking emergency protocol is active near ${zoneName}. Security has opened emergency lanes, redirected incoming vehicles, and enabled overflow parking.`;
+      risk = "high";
+      state.parkingManagement.incidentMode = true;
+      state.parkingManagement.emergencyLaneOpen = true;
+      state.parkingManagement.overflowActive = true;
+      state.parkingManagement.updatedAt = new Date().toISOString();
+      addAlert(`[AUTOMATION] Parking emergency: emergency lane opened and overflow lot activated near ${zoneName}.`);
+      state.cameraFocus = {
+        zoneId: recentIncident.zoneId,
+        gateId: targetGate,
+        incidentType: "parking_emergency",
+        message: `Camera focus moved to parking ingress lanes near Gate ${targetGate} for emergency vehicle routing.`,
+        priority: "high",
+        updatedAt: new Date().toISOString()
+      };
+    } else {
+      action = `Security teams are guiding spectators from exposed sections near ${zoneName} toward covered concourses via Gate ${targetGate}.`;
+      risk = "low";
+      addAlert(`[AUTOMATION] Weather protocol: shelter guidance started for sections near ${zoneName}.`);
+      state.cameraFocus = {
+        zoneId: recentIncident.zoneId,
+        gateId: targetGate,
+        incidentType: "weather",
+        message: `Camera focus moved to exposed concourse near Gate ${targetGate} for weather safety checks.`,
+        priority: "normal",
+        updatedAt: new Date().toISOString()
+      };
     }
 
     addTrace("Incident Commander", thought, action);
@@ -327,10 +466,10 @@ const runAgents = async () => {
 
       const summary = await maybeAISummary(prompt);
       const commsAction = summary || buildFallbackAnnouncement(recentIncident);
-      addTrace("Comms Officer", "Generating public safety announcement.", `PA: ${commsAction}`);
+      addTrace("Comms Officer", "I'm preparing a calm, clear message for spectators.", `PA: ${commsAction}`);
       enqueueOrExecuteAction("Comms Officer", `Broadcast PA: ${commsAction}`, "low");
     } else {
-      addTrace("Comms Officer", "Monitoring ongoing incident communications.", "Maintaining safety banners on all screens.");
+      addTrace("Comms Officer", "I'm keeping communication steady while teams are working.", "Safety guidance remains visible on all screens.");
     }
   }
 
@@ -339,8 +478,8 @@ const runAgents = async () => {
   if (pendingCount > 0) {
     addTrace(
       "Supervisor",
-      `System awaiting ${pendingCount} high-risk approvals.`,
-      "Monitoring operator response time."
+      `There ${pendingCount === 1 ? "is" : "are"} ${pendingCount} high-risk action${pendingCount === 1 ? "" : "s"} waiting for control-room approval.`,
+      "I'm monitoring approval timing and keeping the response queue prioritized."
     );
   }
 };
@@ -365,6 +504,23 @@ const simulateTick = () => {
   state.cameraStats.totalDetected = state.cameraStats.seatedFans + state.cameraStats.staffCount;
   state.cameraStats.confidence = 92 + Math.floor(Math.random() * 5);
 
+  // Parking lot occupancy derived from parking lane + concourse pressure
+  const parkingZone = state.zones.find((z) => z.id === "parking");
+  const gateAZone = state.zones.find((z) => z.id === "gate_a");
+  const gateBZone = state.zones.find((z) => z.id === "gate_b");
+  const parkingEstimate =
+    (parkingZone?.currentCount || 0) * 6 +
+    Math.floor(((gateAZone?.currentCount || 0) + (gateBZone?.currentCount || 0)) * 0.4);
+  state.parkingManagement.occupiedSpots = Math.max(
+    800,
+    Math.min(state.parkingManagement.totalSpots, parkingEstimate)
+  );
+  const parkingPct = Math.round((state.parkingManagement.occupiedSpots / state.parkingManagement.totalSpots) * 100);
+  if (!state.parkingManagement.incidentMode) {
+    state.parkingManagement.overflowActive = parkingPct >= 88;
+  }
+  state.parkingManagement.updatedAt = new Date().toISOString();
+
   for (const gate of state.gates) {
     const delta = Math.floor(Math.random() * 60) - 30;
     gate.flowPerMin = Math.max(100, Math.min(400, gate.flowPerMin + delta));
@@ -383,7 +539,8 @@ const createIncident = (incident: z.infer<typeof incidentSchema>) => {
     zoneId: incident.zoneId,
     severity: incident.severity,
     message: incident.message,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    status: "open"
   };
   state.incidents.unshift(payload);
   state.incidents = state.incidents.slice(0, 10);
@@ -502,6 +659,35 @@ app.post("/api/incident", requireAuth, async (req, res) => {
   return res.status(201).json({ ok: true });
 });
 
+app.post("/api/incidents/:id/review", requireAuth, (req, res) => {
+  const parsed = incidentReviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid review payload" });
+  }
+
+  const incident = state.incidents.find((item) => item.id === req.params.id);
+  if (!incident) {
+    return res.status(404).json({ error: "Incident not found" });
+  }
+  if (incident.status !== "open") {
+    return res.status(400).json({ error: "Incident already reviewed" });
+  }
+
+  incident.status = parsed.data.decision === "accept" ? "accepted" : "rejected";
+  incident.reviewedAt = new Date().toISOString();
+
+  if (parsed.data.decision === "accept") {
+    addAlert(`[CONTROL ROOM] Incident ${incident.id} accepted as handled by operator.`);
+    addTrace("Supervisor", `Operator accepted incident ${incident.id}.`, "Marked incident lifecycle as handled.");
+  } else {
+    addAlert(`[CONTROL ROOM] Incident ${incident.id} rejected and escalated for additional response.`);
+    addTrace("Supervisor", `Operator rejected incident ${incident.id}.`, "Escalation requested for manual intervention.");
+  }
+
+  emitState();
+  return res.json({ ok: true, incidentId: incident.id, status: incident.status });
+});
+
 app.post("/api/toggle-review", requireAuth, (req, res) => {
   const parsed = reviewSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -530,6 +716,24 @@ app.post("/api/reset", requireAuth, (_req, res) => {
   state.incidents = [];
   state.pendingActions = [];
   state.agentTraces = [];
+  announcedIncidents.clear();
+  plannedIncidentResponses.clear();
+  state.cameraFocus = {
+    zoneId: "",
+    gateId: "",
+    incidentType: "none",
+    message: "General monitoring across stadium zones.",
+    priority: "normal",
+    updatedAt: new Date().toISOString()
+  };
+  state.parkingManagement = {
+    totalSpots: 6000,
+    occupiedSpots: 1800 + Math.floor(Math.random() * 500),
+    emergencyLaneOpen: true,
+    overflowActive: false,
+    incidentMode: false,
+    updatedAt: new Date().toISOString()
+  };
   state.alerts = [`${new Date().toLocaleTimeString()} - System reset. Gates open — pre-match inflow in progress.`];
   emitState();
   return res.json({ ok: true });
@@ -542,6 +746,18 @@ app.post("/api/simulate-inflow", requireAuth, (_req, res) => {
     z.currentCount = Math.min(z.capacity, target);
   });
   state.alerts.unshift(`${new Date().toLocaleTimeString()} - [SIMULATION] Sudden massive inflow detected across all stands.`);
+  emitState();
+  return res.json({ ok: true });
+});
+
+app.post("/api/simulate-parking-emergency", requireAuth, async (_req, res) => {
+  createIncident({
+    type: "parking_emergency",
+    zoneId: "parking",
+    severity: "high",
+    message: "Simulated parking emergency: stalled vehicles blocking emergency access."
+  });
+  await runAgents();
   emitState();
   return res.json({ ok: true });
 });
@@ -596,7 +812,7 @@ app.post("/api/agents/:name/query", requireAuth, async (req, res) => {
     meteorologist: `Atmospheric conditions: ${temp}°C, ${rain}% rain probability, wind ${Math.round(state.weather.windKmph)} km/h. ${rain > 60 ? "Rain protocol on standby — recommend activating covered shelter zones." : rain > 30 ? "Moderate rain risk. Monitoring cloud patterns." : "Conditions are stable. No weather-related advisories needed."}`,
     "incident commander": `${state.incidents.length > 0 ? `Coordinating response to ${state.incidents[0].type.replace("_"," ")} at ${state.incidents[0].zoneId} (severity: ${state.incidents[0].severity}). ${pending} action(s) pending operator approval.` : "No active incidents. All emergency response units are on standby. Response protocols are loaded and ready."}`,
     "comms officer": `Public information channels are active on all ${state.zones.length} zones. ${state.incidents.length > 0 ? `Broadcasting safety advisory for ${state.incidents[0].type.replace("_"," ")} at ${state.incidents[0].zoneId}.` : "No active announcements. PA system on standby with pre-loaded weather and safety messages."}`,
-    supervisor: `System health nominal. ${pending} high-risk action(s) awaiting approval. ${state.agentTraces.length} agent decisions logged this session. Human-in-the-loop mode is ${state.humanReviewEnabled ? "enabled" : "disabled"}.`
+    supervisor: `System health nominal. ${pending} high-risk action(s) awaiting approval. Parking occupancy is ${Math.round((state.parkingManagement.occupiedSpots / state.parkingManagement.totalSpots) * 100)}%. Human-in-the-loop mode is ${state.humanReviewEnabled ? "enabled" : "disabled"}.`
   };
   const fallback = fallbackMap[agentNameLower] ?? `${agentName} is operational. Total crowd: ${totalFans.toLocaleString()}, temperature: ${temp}°C. All sensors nominal.`;
 

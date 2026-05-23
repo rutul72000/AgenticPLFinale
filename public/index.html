@@ -61,6 +61,87 @@
         border-color: rgba(34,197,94,0.3);
         color: #4ade80;
       }
+
+      /* 3D heatmap cards */
+      .stadium-grid {
+        perspective: 1100px;
+      }
+      .zone-3d-card {
+        position: relative;
+        width: 100%;
+        min-height: 120px;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        transform: rotateX(14deg) rotateY(-8deg);
+        transform-style: preserve-3d;
+        transition: transform 0.5s ease, box-shadow 0.5s ease;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 12px 26px rgba(0, 0, 0, 0.35);
+      }
+      .zone-3d-card:hover {
+        transform: rotateX(10deg) rotateY(-5deg) translateY(-2px);
+      }
+      .zone-3d-card::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(to bottom, rgba(255,255,255,0.08), rgba(255,255,255,0));
+        pointer-events: none;
+        z-index: 3;
+      }
+      .zone-3d-fill {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 0%;
+        opacity: 0.7;
+        transition: height 0.9s ease;
+        z-index: 1;
+      }
+      .zone-3d-fill.fill-safe {
+        background: linear-gradient(to top, rgba(34,197,94,0.95), rgba(74,222,128,0.7));
+      }
+      .zone-3d-fill.fill-busy {
+        background: linear-gradient(to top, rgba(234,179,8,0.95), rgba(253,224,71,0.7));
+      }
+      .zone-3d-fill.fill-critical {
+        background: linear-gradient(to top, rgba(239,68,68,0.95), rgba(252,165,165,0.75));
+      }
+      .zone-3d-grid {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px),
+          linear-gradient(to top, rgba(255,255,255,0.06) 1px, transparent 1px);
+        background-size: 18px 18px;
+        opacity: 0.35;
+        z-index: 2;
+      }
+      .zone-3d-content {
+        position: relative;
+        z-index: 4;
+        text-shadow: 0 2px 8px rgba(0,0,0,0.45);
+      }
+      .gate-3d-card {
+        border-radius: 0.65rem;
+        transform: rotateX(12deg);
+        transform-style: preserve-3d;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,0.08),
+          0 8px 18px rgba(0,0,0,0.35);
+      }
+      .aux-zone-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+      }
+      @media (min-width: 768px) {
+        .aux-zone-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
     </style>
   </head>
   <body class="text-slate-200 min-h-screen overflow-x-hidden">
@@ -134,22 +215,16 @@
 
       <!-- Controls Row -->
       <div class="flex flex-wrap items-center gap-2">
-        <span class="text-[10px] uppercase tracking-widest text-slate-600 font-bold mr-1">Simulate:</span>
-        <button data-type="crowd_surge" class="px-4 py-2 bg-slate-800 hover:bg-orange-900/40 rounded-lg text-sm font-semibold border border-slate-700 hover:border-orange-500/50 transition-all flex items-center gap-2">
-          <span class="w-2 h-2 bg-orange-500 rounded-full"></span> Crowd Surge
-        </button>
-        <button data-type="medical" class="px-4 py-2 bg-slate-800 hover:bg-blue-900/40 rounded-lg text-sm font-semibold border border-slate-700 hover:border-blue-500/50 transition-all flex items-center gap-2">
-          <span class="w-2 h-2 bg-blue-500 rounded-full"></span> Medical
-        </button>
-        <button data-type="fire" class="px-4 py-2 bg-slate-800 hover:bg-red-900/40 rounded-lg text-sm font-semibold border border-slate-700 hover:border-red-500/50 transition-all flex items-center gap-2">
-          <span class="w-2 h-2 bg-red-500 rounded-full"></span> Fire Alert
-        </button>
+        <span class="text-[10px] uppercase tracking-widest text-slate-600 font-bold mr-1">Global Controls:</span>
         <button data-type="weather" class="px-4 py-2 bg-slate-800 hover:bg-yellow-900/30 rounded-lg text-sm font-semibold border border-slate-700 hover:border-yellow-500/50 transition-all flex items-center gap-2">
           <span class="w-2 h-2 bg-yellow-500 rounded-full"></span> Rain Protocol
         </button>
         <div class="flex-1"></div>
         <div class="glass px-3 py-2 rounded-xl flex items-center gap-3">
-          <span class="text-xs font-bold uppercase tracking-wider text-blue-400 whitespace-nowrap">Agent Oversight</span>
+          <div class="flex flex-col">
+            <span class="text-xs font-bold uppercase tracking-wider text-blue-400 whitespace-nowrap">AI Oversight</span>
+            <span class="text-[9px] text-slate-500">High-risk actions require operator approval</span>
+          </div>
           <label class="relative inline-flex items-center cursor-pointer">
             <input type="checkbox" id="reviewToggle" class="sr-only peer" checked>
             <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-gray-300 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
@@ -162,8 +237,21 @@
           📈 Simulate Inflow
         </button>
         <button id="happyPathBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-bold border border-blue-400 transition-all flex items-center gap-2 shadow-lg shadow-blue-900/40">
-          🚀 Happy Path
+          🚀 Run Full Demo
         </button>
+      </div>
+
+      <!-- Reasoning Spotlight (no-scroll summary) -->
+      <div class="glass rounded-2xl p-4 border border-blue-500/20">
+        <div class="flex items-center justify-between gap-3 mb-2">
+          <h2 class="font-bold text-sm text-blue-300">Live Agent Reasoning Spotlight</h2>
+          <button id="openReasoningModalBtn" class="px-2 py-1 text-[10px] rounded-md bg-blue-600/20 border border-blue-500/40 text-blue-300 hover:bg-blue-600/30 transition-all">
+            Open Full View
+          </button>
+        </div>
+        <div id="reasoningSpotlight" class="rounded-lg bg-slate-900/60 border border-slate-800 px-3 py-2 text-sm text-slate-300">
+          Waiting for agent reasoning...
+        </div>
       </div>
 
       <!-- Main Content Grid -->
@@ -196,7 +284,60 @@
               </div>
             </div>
 
+            <div class="mt-4">
+              <p class="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2">Concourse & Auxiliary Zones</p>
+              <div id="auxZones" class="aux-zone-grid"></div>
+            </div>
+
             <div class="mt-6 pt-5 border-t border-slate-800 grid grid-cols-2 md:grid-cols-4 gap-3" id="gates"></div>
+          </div>
+
+          <!-- Interactive Zone Inspector -->
+          <div class="glass rounded-2xl p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="font-bold text-base flex items-center gap-2">
+                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5h2m-1 0v14m-7-7h14"></path></svg>
+                Zone Interaction Console
+              </h2>
+              <span class="text-[10px] uppercase tracking-widest text-slate-500">Click a zone card below</span>
+            </div>
+            <div id="zoneQuickPick" class="grid grid-cols-2 md:grid-cols-5 gap-2"></div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+                <div class="text-[10px] uppercase tracking-widest text-slate-500">Selected Zone</div>
+                <div id="zoneInspectorName" class="font-bold text-slate-200 mt-1">—</div>
+              </div>
+              <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+                <div class="text-[10px] uppercase tracking-widest text-slate-500">Occupancy</div>
+                <div id="zoneInspectorOccupancy" class="font-bold text-slate-200 mt-1">—</div>
+              </div>
+              <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+                <div class="text-[10px] uppercase tracking-widest text-slate-500">Risk Level</div>
+                <div id="zoneInspectorRisk" class="font-bold mt-1">—</div>
+              </div>
+              <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+                <div class="text-[10px] uppercase tracking-widest text-slate-500">Recent Events</div>
+                <div id="zoneInspectorEventsCount" class="font-bold text-slate-200 mt-1">—</div>
+              </div>
+            </div>
+            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div id="zoneInspectorBar" class="h-full bg-blue-500 transition-all duration-500" style="width:0%"></div>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button id="zoneSurgeBtn" class="px-3 py-1.5 rounded-md bg-orange-600/20 border border-orange-500/40 text-orange-300 text-xs font-bold hover:bg-orange-600/30 transition-all">
+                Trigger Crowd Surge
+              </button>
+              <button id="zoneMedicalBtn" class="px-3 py-1.5 rounded-md bg-blue-600/20 border border-blue-500/40 text-blue-300 text-xs font-bold hover:bg-blue-600/30 transition-all">
+                Trigger Medical
+              </button>
+              <button id="zoneFireBtn" class="px-3 py-1.5 rounded-md bg-red-600/20 border border-red-500/40 text-red-300 text-xs font-bold hover:bg-red-600/30 transition-all">
+                Trigger Fire
+              </button>
+              <button id="zoneParkingEmergencyBtn" class="px-3 py-1.5 rounded-md bg-purple-600/20 border border-purple-500/40 text-purple-300 text-xs font-bold hover:bg-purple-600/30 transition-all">
+                Trigger Parking Emergency
+              </button>
+            </div>
+            <div id="zoneRecentEvents" class="space-y-1 text-[11px] mono max-h-28 overflow-y-auto"></div>
           </div>
 
           <!-- Dynamic Crowd Visual -->
@@ -242,6 +383,9 @@
               </span>
               <span id="cameraConfidence" class="text-[9px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded uppercase mono tracking-widest">94% CONF</span>
             </h2>
+            <div id="cameraFocusBanner" class="mb-3 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[10px] mono text-blue-300">
+              Focus: General monitoring across stadium zones.
+            </div>
             <div class="grid grid-cols-2 gap-3 mb-4">
               <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
                 <div class="text-[10px] text-slate-500 font-bold uppercase">Total Detected</div>
@@ -264,6 +408,36 @@
             </div>
           </div>
 
+          <div class="glass rounded-2xl p-5 flex flex-col">
+            <h2 class="font-bold text-base mb-3 flex items-center justify-between">
+              <span class="flex items-center gap-2">
+                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M5 6h14M7 14h10m-8 4h6"></path></svg>
+                Parking Management
+              </span>
+              <span id="parkingModeBadge" class="text-[9px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded uppercase mono tracking-widest">Normal</span>
+            </h2>
+            <div class="grid grid-cols-2 gap-3 mb-3">
+              <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
+                <div class="text-[10px] text-slate-500 font-bold uppercase">Occupied Spots</div>
+                <div id="parkingOccupied" class="text-xl font-bold mono text-white">—</div>
+              </div>
+              <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-800">
+                <div class="text-[10px] text-slate-500 font-bold uppercase">Emergency Lane</div>
+                <div id="parkingEmergencyLane" class="text-xl font-bold mono text-blue-400">—</div>
+              </div>
+            </div>
+            <div class="space-y-2">
+              <div class="flex justify-between text-[10px] font-bold uppercase text-slate-400">
+                <span>Parking Occupancy</span>
+                <span id="parkingPct">—</span>
+              </div>
+              <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                <div id="parkingBar" class="h-full bg-purple-500 transition-all duration-1000" style="width: 0%"></div>
+              </div>
+              <div id="parkingOverflow" class="text-[10px] mono text-slate-500 text-right">—</div>
+            </div>
+          </div>
+
           <div class="glass rounded-2xl p-5 flex flex-col" style="height:440px">
             <h2 class="font-bold text-base mb-3 flex items-center justify-between flex-shrink-0">
               <span class="flex items-center gap-2">
@@ -271,6 +445,7 @@
                 Agent Reasoning
               </span>
               <div class="flex items-center gap-2">
+                <button id="openReasoningModalBtn2" class="text-[9px] bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded uppercase mono border border-slate-600 transition-all">Full</button>
                 <button id="clearFilterBtn" class="hidden text-[9px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded uppercase mono border border-blue-400 transition-all shadow-lg shadow-blue-900/20">Clear Filter</button>
                 <span class="text-[9px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded uppercase mono tracking-widest">Live</span>
               </div>
@@ -365,6 +540,60 @@
             <span class="text-[9px] text-green-500/80 font-bold uppercase">Ready</span>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Incident Automation Modal -->
+    <div id="incidentModal" class="hidden fixed inset-0 z-[210] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+      <div class="glass w-full max-w-2xl rounded-2xl border border-red-500/30 shadow-2xl overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between">
+          <div>
+            <p class="text-[10px] uppercase tracking-widest text-red-400 font-bold">Control Room Authorization</p>
+            <h3 id="incidentModalTitle" class="text-lg font-bold text-white">Incident Review Required</h3>
+          </div>
+          <button id="closeIncidentModal" class="text-slate-400 hover:text-white transition-colors">✕</button>
+        </div>
+        <div class="p-5 space-y-4">
+          <div class="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-[11px] text-yellow-300">
+            This alert appears after 1 minute so the control-room operator can authorize whether the situation has been handled.
+          </div>
+          <div class="grid grid-cols-2 gap-3 text-xs mono">
+            <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+              <div class="text-slate-500 uppercase tracking-widest text-[10px]">Zone</div>
+              <div id="incidentModalZone" class="text-slate-200 font-bold">—</div>
+            </div>
+            <div class="bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+              <div class="text-slate-500 uppercase tracking-widest text-[10px]">Severity</div>
+              <div id="incidentModalSeverity" class="text-slate-200 font-bold">—</div>
+            </div>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-widest text-slate-500 mb-2 font-bold">Automated Response</p>
+            <div id="incidentModalSteps" class="space-y-2 text-sm"></div>
+          </div>
+          <div class="flex gap-2 pt-2">
+            <button id="incidentRejectBtn" class="flex-1 px-3 py-2 rounded-lg border border-red-500/50 bg-red-500/20 text-red-300 text-xs font-bold hover:bg-red-500/30 transition-all">
+              Reject / Escalate
+            </button>
+            <button id="incidentAcceptBtn" class="flex-1 px-3 py-2 rounded-lg border border-green-500/50 bg-green-500/20 text-green-300 text-xs font-bold hover:bg-green-500/30 transition-all">
+              Accept / Handled
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Full Reasoning Modal -->
+    <div id="reasoningModal" class="hidden fixed inset-0 z-[215] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm">
+      <div class="glass w-full max-w-4xl rounded-2xl border border-blue-500/30 shadow-2xl overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between">
+          <div>
+            <p class="text-[10px] uppercase tracking-widest text-blue-400 font-bold">Agent Trace</p>
+            <h3 class="text-lg font-bold text-white">Full Reasoning Timeline</h3>
+          </div>
+          <button id="closeReasoningModal" class="text-slate-400 hover:text-white transition-colors">✕</button>
+        </div>
+        <div id="reasoningModalList" class="p-5 max-h-[70vh] overflow-y-auto space-y-3 mono text-[12px]"></div>
       </div>
     </div>
     <script src="/app.js"></script>
